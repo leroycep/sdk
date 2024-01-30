@@ -1,7 +1,7 @@
 const std = @import("std");
 
-fn initNativeLibrary(lib: *std.build.CompileStep, tvg: *std.Build.Module) void {
-    lib.addModule("tvg", tvg);
+fn initNativeLibrary(lib: *std.Build.Step.Compile, tvg: *std.Build.Module) void {
+    lib.root_module.addImport("tvg", tvg);
     lib.addIncludePath(.{ .path = "src/binding/include" });
     lib.bundle_compiler_rt = true;
 }
@@ -12,13 +12,13 @@ pub fn build(b: *std.Build) !void {
 
     // TinyVG package
     const tvg = b.addModule("tvg", .{
-        .source_file = .{ .path = "src/lib/tinyvg.zig" },
-        .dependencies = &.{.{ .name = "ptk", .module = ptk }},
+        .root_source_file = .{ .path = "src/lib/tinyvg.zig" },
+        .imports = &.{.{ .name = "ptk", .module = ptk }},
     });
 
     const args_dep = b.dependency("args", .{});
     const args = args_dep.module("args");
-    const www_folder = std.build.InstallDir{ .custom = "www" };
+    const www_folder = std.Build.InstallDir{ .custom = "www" };
 
     const install_include = b.option(bool, "install-include", "Installs the include directory") orelse true;
     const install_www = b.option(bool, "install-www", "Installs the www directory (polyfill)") orelse true;
@@ -39,7 +39,7 @@ pub fn build(b: *std.Build) !void {
         b.installArtifact(static_native_lib);
     }
 
-    const dynamic_lib_name = if (target.isWindows())
+    const dynamic_lib_name = if (target.result.os.tag == .windows)
         "tinyvg.dll"
     else
         "tinyvg";
@@ -66,8 +66,8 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
     });
-    render.addModule("tvg", tvg);
-    render.addModule("args", args);
+    render.root_module.addImport("tvg", tvg);
+    render.root_module.addImport("args", args);
     if (install_bin) {
         b.installArtifact(render);
     }
@@ -78,9 +78,9 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
     });
-    text.addModule("tvg", tvg);
-    text.addModule("args", args);
-    text.addModule("ptk", ptk);
+    text.root_module.addImport("tvg", tvg);
+    text.root_module.addImport("args", args);
+    text.root_module.addImport("ptk", ptk);
     if (install_bin) {
         b.installArtifact(text);
     }
@@ -88,15 +88,16 @@ pub fn build(b: *std.Build) !void {
     const ground_truth_generator = b.addExecutable(.{
         .name = "ground-truth-generator",
         .root_source_file = .{ .path = "src/lib/data/ground-truth.zig" },
-        .main_pkg_path = .{ .path = "src/lib" },
+        .target = target,
         .optimize = optimize,
     });
-    for (tvg.dependencies.keys(), tvg.dependencies.values()) |name, mod| {
-        ground_truth_generator.addModule(name, mod);
+    var tvg_dependency_iter = tvg.iterateDependencies(null, false);
+    while (tvg_dependency_iter.next()) |dep| {
+        ground_truth_generator.root_module.addImport(dep.name, dep.module);
     }
 
     const generate_ground_truth = b.addRunArtifact(ground_truth_generator);
-    generate_ground_truth.cwd = b.cache_root.path;
+    generate_ground_truth.cwd = .{ .path = b.cache_root.path.? };
 
     const gen_gt_step = b.step("generate", "Regenerates the ground truth data.");
 
@@ -111,14 +112,14 @@ pub fn build(b: *std.Build) !void {
         tvg_conversion.addArg("2");
         tvg_conversion.addArg("--output");
         tvg_conversion.addArg(file[0 .. file.len - 3] ++ "tga");
-        tvg_conversion.cwd = b.cache_root.path;
+        tvg_conversion.cwd = .{ .path = b.cache_root.path.? };
         tvg_conversion.step.dependOn(&generate_ground_truth.step);
 
         const tvgt_conversion = b.addRunArtifact(text);
         tvgt_conversion.addArg(file);
         tvgt_conversion.addArg("--output");
         tvgt_conversion.addArg(file[0 .. file.len - 3] ++ "tvgt");
-        tvgt_conversion.cwd = b.cache_root.path;
+        tvgt_conversion.cwd = .{ .path = b.cache_root.path.? };
         tvgt_conversion.step.dependOn(&generate_ground_truth.step);
 
         gen_gt_step.dependOn(&tvgt_conversion.step);
@@ -127,16 +128,17 @@ pub fn build(b: *std.Build) !void {
 
     {
         const tvg_tests = b.addTest(.{
-            .root_source_file = tvg.source_file,
+            .root_source_file = tvg.root_source_file.?,
             .optimize = optimize,
-            .main_pkg_path = .{ .path = "src" },
         });
-        for (tvg.dependencies.keys(), tvg.dependencies.values()) |name, mod| {
-            tvg_tests.addModule(name, mod);
+        tvg_dependency_iter = tvg.iterateDependencies(null, false);
+        while (tvg_dependency_iter.next()) |dep| {
+            tvg_tests.root_module.addImport(dep.name, dep.module);
         }
 
         const static_binding_test = b.addExecutable(.{
             .name = "static-native-binding",
+            .target = target,
             .optimize = optimize,
         });
         static_binding_test.linkLibC();
@@ -146,6 +148,7 @@ pub fn build(b: *std.Build) !void {
 
         const dynamic_binding_test = b.addExecutable(.{
             .name = "dynamic-native-binding",
+            .target = target,
             .optimize = optimize,
         });
         dynamic_binding_test.linkLibC();
@@ -154,10 +157,10 @@ pub fn build(b: *std.Build) !void {
         dynamic_binding_test.linkLibrary(dynamic_native_lib);
 
         const static_binding_test_run = b.addRunArtifact(static_binding_test);
-        static_binding_test_run.cwd = b.cache_root.path;
+        static_binding_test_run.cwd = .{ .path = b.cache_root.path.? };
 
         const dynamic_binding_test_run = b.addRunArtifact(dynamic_binding_test);
-        dynamic_binding_test_run.cwd = b.cache_root.path;
+        dynamic_binding_test_run.cwd = .{ .path = b.cache_root.path.? };
 
         const test_step = b.step("test", "Runs all tests");
         test_step.dependOn(&b.addRunArtifact(tvg_tests).step);
@@ -165,18 +168,20 @@ pub fn build(b: *std.Build) !void {
         test_step.dependOn(&dynamic_binding_test_run.step);
     }
 
-    const polyfill = b.addSharedLibrary(.{
+    const polyfill_target = b.resolveTargetQuery(.{
+        .cpu_arch = .wasm32,
+        .cpu_model = .baseline,
+        .os_tag = .freestanding,
+    });
+    const polyfill = b.addExecutable(.{
         .name = "tinyvg",
         .root_source_file = .{ .path = "src/polyfill/tinyvg.zig" },
-        .target = .{
-            .cpu_arch = .wasm32,
-            .cpu_model = .baseline,
-            .os_tag = .freestanding,
-        },
+        .target = polyfill_target,
         .optimize = optimize,
     });
-    polyfill.strip = (optimize != .Debug);
-    polyfill.addModule("tvg", tvg);
+    polyfill.entry = .disabled;
+    polyfill.root_module.strip = (optimize != .Debug);
+    polyfill.root_module.addImport("tvg", tvg);
 
     if (install_www) {
         var artifact_install = b.addInstallArtifact(polyfill, .{});

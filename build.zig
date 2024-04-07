@@ -91,10 +91,6 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
     });
-    var tvg_dependency_iter = tvg.iterateDependencies(null, false);
-    while (tvg_dependency_iter.next()) |dep| {
-        ground_truth_generator.root_module.addImport(dep.name, dep.module);
-    }
 
     const generate_ground_truth = b.addRunArtifact(ground_truth_generator);
     generate_ground_truth.cwd = .{ .path = b.cache_root.path.? };
@@ -131,10 +127,6 @@ pub fn build(b: *std.Build) !void {
             .root_source_file = tvg.root_source_file.?,
             .optimize = optimize,
         });
-        tvg_dependency_iter = tvg.iterateDependencies(null, false);
-        while (tvg_dependency_iter.next()) |dep| {
-            tvg_tests.root_module.addImport(dep.name, dep.module);
-        }
 
         const static_binding_test = b.addExecutable(.{
             .name = "static-native-binding",
